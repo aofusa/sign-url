@@ -18,7 +18,6 @@ use rsa::signature::{SignatureEncoding, Signer};
 use rsa::traits::{PrivateKeyParts, PublicKeyParts};
 use serde_derive::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tokio::time::Instant;
 use tracing::{debug, info};
 use tracing_subscriber;
 use url::Url;
@@ -29,6 +28,19 @@ struct Account {
     username: String,
     password: String,
 }
+
+#[derive(Serialize, Deserialize, Debug)]
+struct CreateQuery {
+    expires: Option<u64>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct VerifyQuery {
+    payload: String,
+    expires: u64,
+    signature: String,
+}
+
 
 #[derive(Deserialize, Serialize, Debug)]
 struct Signature {
@@ -134,11 +146,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // POST /create?expires=number
     let create = warp::path("create")
       .and(warp::post())
-      .and(warp::query::<HashMap<String, u64>>())
+      .and(warp::query::<CreateQuery>())
       .and(warp::body::json())
-      .map(move |query: HashMap<String, u64>, body: Account| {
-          let expires = match query.get("expires") {
-              Some(exp) => *exp,
+      .map(move |query: CreateQuery, body: Account| {
+          let expires = match query.expires {
+              Some(exp) => exp,
               None => 600000u64,
           };
           let sign = Signature::make(body, expires, private_key.clone());
@@ -151,9 +163,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // GET /verify?signature~~~
     let verify = warp::path!("verify")
       .and(warp::get())
-      .and(warp::query::<HashMap<String, String>>())
-      .map(|query: HashMap<String, String>| {
-          let signature = query.get("signature");
+      .and(warp::query::<VerifyQuery>())
+      .map(|query: VerifyQuery| {
+          let expires =  Duration::from_secs(query.expires);
+          let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap();
+          if now > expires { return format!("Expired"); }
+
+          let payload = query.payload;
+          let signature = query.signature;
+          println!("payload: {:?}", payload);
           println!("signature: {:?}", signature);
           format!("Hello, {:?}!", signature)
       });
