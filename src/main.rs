@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::ops::Add;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -13,8 +12,8 @@ use argon2::{
 use base64::Engine;
 use base64::prelude::BASE64_STANDARD;
 use rsa::{Pkcs1v15Encrypt, RsaPrivateKey, RsaPublicKey};
-use rsa::pkcs1v15::SigningKey;
-use rsa::signature::{SignatureEncoding, Signer};
+use rsa::pkcs1v15::{Signature, SigningKey, VerifyingKey};
+use rsa::signature::{SignatureEncoding, Signer, Verifier};
 use rsa::traits::{PrivateKeyParts, PublicKeyParts};
 use serde_derive::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -34,22 +33,14 @@ struct CreateQuery {
     expires: Option<u64>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-struct VerifyQuery {
-    payload: String,
-    expires: u64,
-    signature: String,
-}
-
-
 #[derive(Deserialize, Serialize, Debug)]
-struct Signature {
+struct SignUrlContainer {
     payload: String,  // username+argon2hashed passwordを公開鍵で暗号化したものをbase64エンコードしたデータ
     expires: u64,  // url有効期間のunixタイム時間
     signature: String,  // ?payload=<payload>&expires=<expires> の文字列を秘密鍵で暗号化したものをsha512でハッシュしたもの
 }
 
-impl Signature {
+impl SignUrlContainer {
     fn make(account: Account, expires: u64, private_key: Arc<RsaPrivateKey>) -> Self {
         // let user = Account {
         //     username: account.username,
@@ -82,7 +73,7 @@ impl Signature {
         debug!("sign: {:?}", sign);
         let signature = BASE64_STANDARD.encode(sign);
         debug!("base64 encoded sign: {:?}", signature);
-        Signature {
+        SignUrlContainer {
             payload,
             expires,
             signature,
@@ -96,9 +87,15 @@ struct CreateResponse {
 }
 
 impl CreateResponse {
-    fn new(base: String, sign: &Signature) -> Self {
+    fn new(base: String, sign: &SignUrlContainer) -> Self {
         let mut url = Url::parse(&base).unwrap().join("verify").unwrap();
-        url.set_query(Some(&format!("payload={}&expires={}&signature={}", sign.payload, sign.expires, sign.signature)));
+        url.set_query(Some(
+            &format!("payload={}&expires={}&signature={}",
+                 urlencoding::encode(sign.payload.as_str()).to_string(),
+                 sign.expires,
+                 urlencoding::encode(sign.signature.as_str()).to_string()
+            )
+        ));
         let sign_url = url.to_string();
         CreateResponse {
             sign_url
@@ -110,6 +107,55 @@ fn hash(s: &[u8]) -> String {
     let salt = SaltString::generate(&mut OsRng);
     let argon2 = Argon2::default();
     argon2.hash_password(s, &salt).unwrap().to_string()
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct VerifyQuery {
+    payload: String,
+    expires: u64,
+    signature: String,
+}
+
+fn verify(payload: String, expires: u64, signature: String, private_key: Arc<RsaPrivateKey>) -> Result<String, String> {
+    // 動作順序
+    // 1. 改ざんチェック
+    // 2. 期限チェック
+    // 3. データ複合化
+
+    // signatureをみて改ざんされていないことを確認する
+    debug!("base64 encoded signature: {:?}", signature);
+    let sign = BASE64_STANDARD.decode(signature).unwrap();
+    debug!("decode signature: {:?}", sign);
+    let signature = Signature::try_from(sign.as_slice()).unwrap();
+    let private_key = RsaPrivateKey::from_components(
+        private_key.n().clone(), private_key.e().clone(), private_key.d().clone(), Vec::from(private_key.primes())
+    ).unwrap();
+    let public_key = RsaPublicKey::from(private_key.clone());
+    let param = format!("?payload={}&expires={}", payload, expires);
+    let mut hasher = Sha256::new();
+    hasher.update(param.as_bytes());
+    let hash = hasher.finalize();
+    let verifying_key: VerifyingKey<Sha256> = VerifyingKey::new(public_key);
+    if let Err(_) = verifying_key.verify(&hash, &signature) {
+        return Err("Invalid payload".to_string());
+    }
+
+    // expiresをみて期限が切れてないことを確認する
+    let expires =  Duration::from_secs(expires);
+    let now = SystemTime::now()
+      .duration_since(SystemTime::UNIX_EPOCH)
+      .unwrap();
+    if now > expires { return Err("Expired".to_string()); }
+
+    // データ複合化
+    let payload = payload;
+    // let user = (account.username, hash(account.password.as_bytes()));
+    // debug!("account: {:?}", user);
+    // let serialize = serde_json::to_string(&user).unwrap();
+    // let encrypt = public_key.encrypt(&mut rand::thread_rng(), Pkcs1v15Encrypt, serialize.as_bytes()).unwrap();
+    println!("payload: {:?}", payload);
+    println!("signature: {:?}", signature);
+    Ok(format!("Hello, {:?}!", signature))
 }
 
 #[tokio::main]
@@ -144,39 +190,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
       .map(|| "Hello, World!");
 
     // POST /create?expires=number
-    let create = warp::path("create")
-      .and(warp::post())
-      .and(warp::query::<CreateQuery>())
-      .and(warp::body::json())
-      .map(move |query: CreateQuery, body: Account| {
-          let expires = match query.expires {
-              Some(exp) => exp,
-              None => 600000u64,
-          };
-          let sign = Signature::make(body, expires, private_key.clone());
-          // let host = warp::header::<String>("host");
-          let host = "http://localhost:3030/".to_string();
-          let res = CreateResponse::new(host, &sign);
-          warp::reply::json(&res)
-      });
+    let create = {
+        let private_key = private_key.clone();
+        warp::path("create")
+          .and(warp::post())
+          .and(warp::query::<CreateQuery>())
+          .and(warp::body::json())
+          .map(move |query: CreateQuery, body: Account| {
+              let expires = query.expires.unwrap_or_else(|| 600000u64);
+              let sign = SignUrlContainer::make(body, expires, private_key.to_owned());
+              // let host = warp::header::<String>("host");
+              let host = "http://localhost:3030/".to_string();
+              let res = CreateResponse::new(host, &sign);
+              warp::reply::json(&res)
+          })
+    };
 
     // GET /verify?signature~~~
-    let verify = warp::path!("verify")
-      .and(warp::get())
-      .and(warp::query::<VerifyQuery>())
-      .map(|query: VerifyQuery| {
-          let expires =  Duration::from_secs(query.expires);
-          let now = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap();
-          if now > expires { return format!("Expired"); }
-
-          let payload = query.payload;
-          let signature = query.signature;
-          println!("payload: {:?}", payload);
-          println!("signature: {:?}", signature);
-          format!("Hello, {:?}!", signature)
-      });
+    let verify = {
+        let private_key = private_key.clone();
+        warp::path!("verify")
+          .and(warp::get())
+          .and(warp::query::<VerifyQuery>())
+          .map(move |query: VerifyQuery| {
+              verify(query.payload, query.expires, query.signature, private_key.to_owned()).unwrap_or_else(|err| err)
+          })
+    };
 
     let routes = health_check
       .or(create)
