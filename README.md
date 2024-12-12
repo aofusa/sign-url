@@ -1,24 +1,32 @@
 Sign URL
 =====
 
-以下のAPIを持つ署名付きURLを生成するAPIサーバの実装
-- POST /create
-- GET /verify
-- GET /health-check
-- POST /login
-- POST /logout
-- GET /protected
+
+署名付きURLを生成するAPIサーバの実装
+
+アカウント作成すると一時アカウントを発行する  
+一時アカウントはRSAによって暗号化され、署名付きURLに埋め込まれる  
+署名付きURLにアクセスすることで一時アカウントの正当性検証を行うサンプル  
+
 
 実行環境構築
+-----
 ```sh
-cargo run
+RUST_LOG=debug cargo run
 ```
 
-テスト
-```sh
-curl -X POST -H 'Content-type: application/json' -d '{"username":"user","password":"user"}' https://localhost:3031/create -k
+http://localhost:3030 と https://localhost:3031 で起動する  
 
-curl -X POST -H 'Content-Type: application/json' -d '{"username":"user","password":"user"}' localhost:8080/login -v
-curl -H 'Cookie: ~~~' localhost:8080/protected -v
+
+APIエントリポイント
+- GET /health-check
+- POST /create
+- GET /verify
+
+テスト
+-----
+```sh
+curl -X POST -H 'Content-type: application/json' -d '{"username":"user","password":"user"}' https://localhost:3031/create?expires=10000 -k
+curl https://localhost:3031/verify?payload=~~~ -k
 ```
 

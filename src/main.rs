@@ -145,17 +145,23 @@ fn verify(payload: String, expires: u64, signature: String, private_key: Arc<Rsa
     let now = SystemTime::now()
       .duration_since(SystemTime::UNIX_EPOCH)
       .unwrap();
+    debug!("expires: {}, now: {}", expires.as_secs(), now.as_secs());
     if now > expires { return Err("Expired".to_string()); }
 
     // データ複合化
-    let payload = payload;
-    // let user = (account.username, hash(account.password.as_bytes()));
-    // debug!("account: {:?}", user);
-    // let serialize = serde_json::to_string(&user).unwrap();
-    // let encrypt = public_key.encrypt(&mut rand::thread_rng(), Pkcs1v15Encrypt, serialize.as_bytes()).unwrap();
-    println!("payload: {:?}", payload);
-    println!("signature: {:?}", signature);
-    Ok(format!("Hello, {:?}!", signature))
+    debug!("base64 encoded payload: {:?}", payload);
+    let encrypt_raw_data = BASE64_STANDARD.decode(payload).unwrap();
+    debug!("encrypt raw data: {:?}", encrypt_raw_data);
+    let user_raw_string = String::from_utf8(private_key.decrypt(Pkcs1v15Encrypt, encrypt_raw_data.as_slice()).unwrap()).unwrap();
+    debug!("decrypt raw data: {:?}", user_raw_string);
+    let user_raw: (String, String) = serde_json::from_str(&user_raw_string).unwrap();
+    debug!("raw data: {:?}", user_raw);
+    let user = Account {
+        username: user_raw.0,
+        password: user_raw.1,
+    };
+    debug!("account: {:?}", user);
+    Ok(format!("Hello, {}!", user.username))
 }
 
 #[tokio::main]
