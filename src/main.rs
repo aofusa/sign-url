@@ -21,11 +21,20 @@ use tracing::{debug, info};
 use tracing_subscriber;
 use url::Url;
 use warp::Filter;
+use warp::host::Authority;
 
 #[derive(Deserialize, Serialize, Debug)]
 struct Account {
     username: String,
     password: String,
+}
+
+impl Account {
+    fn validate(&self) -> Result<(), String> {
+        if self.username.len() > 256 { return Err("username must be 256 characters or less".to_string()); }
+        if !self.username.is_ascii() { return Err("username must be ascii characters".to_string()); }
+        Ok(())
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -41,27 +50,27 @@ struct SignUrlContainer {
 }
 
 impl SignUrlContainer {
-    fn make(account: Account, expires: u64, private_key: Arc<RsaPrivateKey>) -> Self {
+    fn make(account: Account, expires: u64, private_key: Arc<RsaPrivateKey>) -> Result<Self, Box<dyn std::error::Error>> {
         // let user = Account {
         //     username: account.username,
         //     password: hash(account.password.as_bytes()),
         // };
+        account.validate()?;
         let user = (account.username, hash(account.password.as_bytes()));
         debug!("account: {:?}", user);
         let private_key = RsaPrivateKey::from_components(
             private_key.n().clone(), private_key.e().clone(), private_key.d().clone(), Vec::from(private_key.primes())
         ).unwrap();
         let public_key = RsaPublicKey::from(private_key.clone());
-        let serialize = serde_json::to_string(&user).unwrap();
+        let serialize = serde_json::to_string(&user)?;
         debug!("account serialize: {:?}", serialize);
-        let encrypt = public_key.encrypt(&mut rand::thread_rng(), Pkcs1v15Encrypt, serialize.as_bytes()).unwrap();
+        let encrypt = public_key.encrypt(&mut rand::thread_rng(), Pkcs1v15Encrypt, serialize.as_bytes())?;
         debug!("encrypt serialized account: {:?}", encrypt);
         let payload = BASE64_STANDARD.encode(encrypt);
         debug!("base64 encoded encrypt: {:?}", payload);
         let expires = SystemTime::now()
           .add(Duration::from_millis(expires))
-          .duration_since(SystemTime::UNIX_EPOCH)
-          .unwrap()
+          .duration_since(SystemTime::UNIX_EPOCH)?
           .as_secs();
         let param = format!("?payload={}&expires={}", payload, expires);
         let mut hasher = Sha256::new();
@@ -73,13 +82,15 @@ impl SignUrlContainer {
         debug!("sign: {:?}", sign);
         let signature = BASE64_STANDARD.encode(sign);
         debug!("base64 encoded sign: {:?}", signature);
-        SignUrlContainer {
+        Ok(SignUrlContainer {
             payload,
             expires,
             signature,
-        }
+        })
     }
 }
+
+
 
 #[derive(Deserialize, Serialize, Debug)]
 struct CreateResponse {
@@ -116,7 +127,7 @@ struct VerifyQuery {
     signature: String,
 }
 
-fn verify(payload: String, expires: u64, signature: String, private_key: Arc<RsaPrivateKey>) -> Result<String, String> {
+fn verify(payload: String, expires: u64, signature: String, private_key: Arc<RsaPrivateKey>) -> Result<String, Box<dyn std::error::Error>> {
     // 動作順序
     // 1. 改ざんチェック
     // 2. 期限チェック
@@ -124,21 +135,19 @@ fn verify(payload: String, expires: u64, signature: String, private_key: Arc<Rsa
 
     // signatureをみて改ざんされていないことを確認する
     debug!("base64 encoded signature: {:?}", signature);
-    let sign = BASE64_STANDARD.decode(signature).unwrap();
+    let sign = BASE64_STANDARD.decode(signature)?;
     debug!("decode signature: {:?}", sign);
-    let signature = Signature::try_from(sign.as_slice()).unwrap();
+    let signature = Signature::try_from(sign.as_slice())?;
     let private_key = RsaPrivateKey::from_components(
         private_key.n().clone(), private_key.e().clone(), private_key.d().clone(), Vec::from(private_key.primes())
-    ).unwrap();
+    )?;
     let public_key = RsaPublicKey::from(private_key.clone());
     let param = format!("?payload={}&expires={}", payload, expires);
     let mut hasher = Sha256::new();
     hasher.update(param.as_bytes());
     let hash = hasher.finalize();
     let verifying_key: VerifyingKey<Sha256> = VerifyingKey::new(public_key);
-    if let Err(_) = verifying_key.verify(&hash, &signature) {
-        return Err("Invalid payload".to_string());
-    }
+    verifying_key.verify(&hash, &signature)?;
 
     // expiresをみて期限が切れてないことを確認する
     let expires =  Duration::from_secs(expires);
@@ -146,15 +155,15 @@ fn verify(payload: String, expires: u64, signature: String, private_key: Arc<Rsa
       .duration_since(SystemTime::UNIX_EPOCH)
       .unwrap();
     debug!("expires: {}, now: {}", expires.as_secs(), now.as_secs());
-    if now > expires { return Err("Expired".to_string()); }
+    if now > expires { return Err(Box::from("Expired")); }
 
     // データ複合化
     debug!("base64 encoded payload: {:?}", payload);
-    let encrypt_raw_data = BASE64_STANDARD.decode(payload).unwrap();
+    let encrypt_raw_data = BASE64_STANDARD.decode(payload)?;
     debug!("encrypt raw data: {:?}", encrypt_raw_data);
-    let user_raw_string = String::from_utf8(private_key.decrypt(Pkcs1v15Encrypt, encrypt_raw_data.as_slice()).unwrap()).unwrap();
+    let user_raw_string = String::from_utf8(private_key.decrypt(Pkcs1v15Encrypt, encrypt_raw_data.as_slice()).unwrap())?;
     debug!("decrypt raw data: {:?}", user_raw_string);
-    let user_raw: (String, String) = serde_json::from_str(&user_raw_string).unwrap();
+    let user_raw: (String, String) = serde_json::from_str(&user_raw_string)?;
     debug!("raw data: {:?}", user_raw);
     let user = Account {
         username: user_raw.0,
@@ -202,13 +211,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
           .and(warp::post())
           .and(warp::query::<CreateQuery>())
           .and(warp::body::json())
-          .map(move |query: CreateQuery, body: Account| {
+          .and(warp::host::optional())
+          .map(move |query: CreateQuery, body: Account, authority: Option<Authority>| {
+              let host = match authority {
+                  Some(a) => {
+                      if let Some(port) = a.port() {
+                          if port.as_u16() == 3030 {
+                              format!("http://{}", a.as_str())
+                          } else {
+                              format!("https://{}", a.as_str())
+                          }
+                      } else {
+                          format!("http://{}", a.as_str())
+                      }
+                  },
+                  None => "http://localhost:3030/".to_string(),
+              };
               let expires = query.expires.unwrap_or_else(|| 600000u64);
-              let sign = SignUrlContainer::make(body, expires, private_key.to_owned());
-              // let host = warp::header::<String>("host");
-              let host = "http://localhost:3030/".to_string();
-              let res = CreateResponse::new(host, &sign);
-              warp::reply::json(&res)
+              debug!("host: {:?}, expires: {:?}", host, expires);
+              match SignUrlContainer::make(body, expires, private_key.to_owned()) {
+                  Ok(sign) => {
+                      let res = CreateResponse::new(host, &sign);
+                      warp::reply::json(&res)
+                  },
+                  Err(e) => {
+                      info!("{:?}", e);
+                      warp::reply::json(&"error".to_string())
+                  }
+              }
           })
     };
 
@@ -219,7 +249,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
           .and(warp::get())
           .and(warp::query::<VerifyQuery>())
           .map(move |query: VerifyQuery| {
-              verify(query.payload, query.expires, query.signature, private_key.to_owned()).unwrap_or_else(|err| err)
+              verify(query.payload, query.expires, query.signature, private_key.to_owned()).unwrap_or_else(|err| {
+                  info!("{:?}", err);
+                  if err.to_string() == "Expired" { return "Expired".to_string(); }
+                  "Invalid".to_string()
+              })
           })
     };
 
