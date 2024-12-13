@@ -6,7 +6,6 @@ use std::thread;
 use std::time::Duration;
 use rsa::RsaPrivateKey;
 use serde_derive::{Deserialize, Serialize};
-use tokio::sync::mpsc;
 use tokio::time::sleep;
 use tracing::{debug, info};
 use tracing_subscriber;
@@ -112,10 +111,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                   let account = {
                       let handle = thread::spawn(move || body.hash());
                       while !handle.is_finished() {
-                          println!("waiting ...");
                           sleep(Duration::from_millis(31)).await;
                       }
-                      handle.join().unwrap()
+                      match handle.join() {
+                          Ok(a) => a,
+                          Err(e) => {
+                              info!("{:?}", e);
+                              return warp::reply::json(&"error".to_string());
+                          },
+                      }
                   };
 
                   if let Err(e) = account.validate() {
