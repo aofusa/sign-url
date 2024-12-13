@@ -2,8 +2,12 @@ mod sign_url;
 mod account;
 
 use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
 use rsa::RsaPrivateKey;
 use serde_derive::{Deserialize, Serialize};
+use tokio::sync::mpsc;
+use tokio::time::sleep;
 use tracing::{debug, info};
 use tracing_subscriber;
 use url::Url;
@@ -85,38 +89,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
           .and(warp::query::<CreateQuery>())
           .and(warp::body::json())
           .and(warp::host::optional())
-          .map(move |query: CreateQuery, body: Account, authority: Option<Authority>| {
+          .then(move |query: CreateQuery, body: Account, authority: Option<Authority>| {
               let private_key = private_key.to_owned();
-              let host = match authority {
-                  Some(a) => {
-                      if let Some(port) = a.port() {
-                          if port.as_u16() == 3030 {
-                              format!("http://{}", a.as_str())
+              async move {
+                  let host = match authority {
+                      Some(a) => {
+                          if let Some(port) = a.port() {
+                              if port.as_u16() == 3030 {
+                                  format!("http://{}", a.as_str())
+                              } else {
+                                  format!("https://{}", a.as_str())
+                              }
                           } else {
-                              format!("https://{}", a.as_str())
+                              format!("http://{}", a.as_str())
                           }
-                      } else {
-                          format!("http://{}", a.as_str())
+                      },
+                      None => "http://localhost:3030/".to_string(),
+                  };
+                  let expires = query.expires.unwrap_or_else(|| 600000u64);
+                  debug!("host: {:?}, expires: {:?}", host, expires);
+
+                  let account = {
+                      let handle = thread::spawn(move || body.hash());
+                      while !handle.is_finished() {
+                          println!("waiting ...");
+                          sleep(Duration::from_millis(31)).await;
                       }
-                  },
-                  None => "http://localhost:3030/".to_string(),
-              };
-              let expires = query.expires.unwrap_or_else(|| 600000u64);
-              debug!("host: {:?}, expires: {:?}", host, expires);
-              let account = body.hash();
-              if let Err(e) = account.validate() {
-                  info!("{:?}", e);
-                  return warp::reply::json(&"error".to_string());
-              }
-              let compressed = account.compress();
-              match SignUrlContainer::make(compressed, expires, private_key.as_ref()) {
-                  Ok(sign) => {
-                      let res = CreateResponse::new(host, &sign);
-                      warp::reply::json(&res)
-                  },
-                  Err(e) => {
+                      handle.join().unwrap()
+                  };
+
+                  if let Err(e) = account.validate() {
                       info!("{:?}", e);
-                      warp::reply::json(&"error".to_string())
+                      return warp::reply::json(&"error".to_string());
+                  }
+                  let compressed = account.compress();
+                  match SignUrlContainer::make(compressed, expires, private_key.as_ref()) {
+                      Ok(sign) => {
+                          let res = CreateResponse::new(host, &sign);
+                          warp::reply::json(&res)
+                      },
+                      Err(e) => {
+                          info!("{:?}", e);
+                          warp::reply::json(&"error".to_string())
+                      }
                   }
               }
           })
