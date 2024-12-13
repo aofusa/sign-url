@@ -100,3 +100,19 @@ impl SignUrlContainer {
         Ok(serialized)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sign() {
+        let data = ("key", 123);
+        let expires = u64::MAX;
+        let private_key = RsaPrivateKey::new(&mut rand::thread_rng(), 512).unwrap();
+        let container = SignUrlContainer::make(data, expires, &private_key).unwrap();
+        let verified = container.verify(&private_key).unwrap();
+        let restore = serde_json::from_str(&verified).unwrap();
+        assert_eq!(data, restore);
+    }
+}
