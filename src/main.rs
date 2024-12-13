@@ -10,7 +10,7 @@ use argon2::{
     Argon2
 };
 use base64::Engine;
-use base64::prelude::BASE64_STANDARD;
+use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use rsa::{Pkcs1v15Encrypt, RsaPrivateKey, RsaPublicKey};
 use rsa::pkcs1v15::{Signature, SigningKey, VerifyingKey};
 use rsa::signature::{SignatureEncoding, Signer, Verifier};
@@ -66,7 +66,7 @@ impl SignUrlContainer {
         debug!("account serialize: {:?}", serialize);
         let encrypt = public_key.encrypt(&mut rand::thread_rng(), Pkcs1v15Encrypt, serialize.as_bytes())?;
         debug!("encrypt serialized account: {:?}", encrypt);
-        let payload = BASE64_STANDARD.encode(encrypt);
+        let payload = BASE64_URL_SAFE_NO_PAD.encode(encrypt);
         debug!("base64 encoded encrypt: {:?}", payload);
         let expires = SystemTime::now()
           .add(Duration::from_millis(expires))
@@ -80,7 +80,7 @@ impl SignUrlContainer {
         let signing_key: SigningKey<Sha256> = SigningKey::new(private_key);
         let sign = signing_key.try_sign(&hash).unwrap().to_bytes();
         debug!("sign: {:?}", sign);
-        let signature = BASE64_STANDARD.encode(sign);
+        let signature = BASE64_URL_SAFE_NO_PAD.encode(sign);
         debug!("base64 encoded sign: {:?}", signature);
         Ok(SignUrlContainer {
             payload,
@@ -135,7 +135,7 @@ fn verify(payload: String, expires: u64, signature: String, private_key: Arc<Rsa
 
     // signatureをみて改ざんされていないことを確認する
     debug!("base64 encoded signature: {:?}", signature);
-    let sign = BASE64_STANDARD.decode(signature)?;
+    let sign = BASE64_URL_SAFE_NO_PAD.decode(signature)?;
     debug!("decode signature: {:?}", sign);
     let signature = Signature::try_from(sign.as_slice())?;
     let private_key = RsaPrivateKey::from_components(
@@ -159,7 +159,7 @@ fn verify(payload: String, expires: u64, signature: String, private_key: Arc<Rsa
 
     // データ複合化
     debug!("base64 encoded payload: {:?}", payload);
-    let encrypt_raw_data = BASE64_STANDARD.decode(payload)?;
+    let encrypt_raw_data = BASE64_URL_SAFE_NO_PAD.decode(payload)?;
     debug!("encrypt raw data: {:?}", encrypt_raw_data);
     let user_raw_string = String::from_utf8(private_key.decrypt(Pkcs1v15Encrypt, encrypt_raw_data.as_slice()).unwrap())?;
     debug!("decrypt raw data: {:?}", user_raw_string);
