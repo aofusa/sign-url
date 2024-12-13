@@ -1,14 +1,7 @@
 mod sign_url;
+mod account;
 
 use std::sync::Arc;
-use argon2::{
-    password_hash::{
-        rand_core::OsRng,
-        PasswordHasher, SaltString,
-        PasswordHash, PasswordVerifier
-    },
-    Argon2
-};
 use rsa::RsaPrivateKey;
 use serde_derive::{Deserialize, Serialize};
 use tracing::{debug, info};
@@ -17,41 +10,7 @@ use url::Url;
 use warp::Filter;
 use warp::host::Authority;
 use crate::sign_url::SignUrlContainer;
-
-#[derive(Deserialize, Serialize, Debug)]
-struct Account {
-    username: String,
-    password: String,
-}
-
-impl Account {
-    fn hash(&self) -> Account {
-        let salt = SaltString::generate(&mut OsRng);
-        let argon2 = Argon2::default();
-        let password_hash = argon2.hash_password(self.password.as_bytes(), &salt).unwrap().to_string();
-        Account {
-            username: self.username.clone(),
-            password: password_hash,
-        }
-    }
-
-    fn compress(&self) -> (String, String) {
-        (self.username.clone(), self.password.clone())
-    }
-
-    fn decompress(x: (String, String)) -> Account {
-        Account {
-            username: x.0,
-            password: x.1,
-        }
-    }
-
-    fn validate(&self) -> Result<(), String> {
-        if self.username.len() > 256 { return Err("username must be 256 characters or less".to_string()); }
-        if !self.username.is_ascii() { return Err("username must be ascii characters".to_string()); }
-        Ok(())
-    }
-}
+use crate::account::Account;
 
 #[derive(Deserialize, Serialize, Debug)]
 struct CreateQuery {
