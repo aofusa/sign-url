@@ -73,6 +73,15 @@ impl ServerSession {
             expires
         }
     }
+
+    fn refresh(&mut self, expires: u64) {
+        let expires = SystemTime::now()
+          .add(Duration::from_millis(expires))
+          .duration_since(SystemTime::UNIX_EPOCH)
+          .unwrap()
+          .as_secs();
+        self.expires = expires;
+    }
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -94,7 +103,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let datastore = Arc::new(DataStore::setup(1024).await?);
     info!("finish setup datastore...");
 
-    let session = Arc::new(RwLock::new(HashMap::<Uuid, ServerSession>::new()));
+    let session = Arc::new(RwLock::new(HashMap::<Uuid, Arc<RwLock<ServerSession>>>::new()));
 
     /*
     post /create?expires=number username,password
@@ -138,7 +147,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                           let new_session = ServerSession::new(100000);
                           let session_id = new_session.id;
-                          session.write().unwrap().insert(session_id, new_session);
+                          session.write().unwrap().insert(session_id, Arc::new(RwLock::new(new_session)));
 
                           Response::builder()
                             .header("Set-Cookie", session_id.to_string())
@@ -149,7 +158,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
           })
     };
 
-    // POST /logout
+    // GET /logout
     let logout = {
         let session = session.clone();
         warp::path::path("logout")
@@ -164,6 +173,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                       }
                   }
                   "logout".to_string()
+              }
+          })
+    };
+
+    // GET /protected
+    let protected = {
+        let session = session.clone();
+        warp::path::path("protected")
+          .and(warp::get())
+          .and(warp::header::<String>("Cookie"))
+          .then(move |cookie: String| {
+              let session = session.to_owned();
+              async move {
+                  if let Ok(cookie) = Uuid::from_str(&cookie) {
+                      if let Some(session) = session.read().unwrap().get(&cookie) {
+                          if session.clone().read().unwrap().expires > SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs() {
+                              session.clone().write().unwrap().refresh(100000);
+                              return "authorized".to_string();
+                          }
+                      }
+                  }
+                  "unauthorized".to_string()
               }
           })
     };
@@ -295,7 +326,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                           datastore.insert_account(&user.username, &user.password).await.unwrap();
                           let new_session = ServerSession::new(100000);
                           let session_id = new_session.id;
-                          session.write().unwrap().insert(session_id, new_session);
+                          session.write().unwrap().insert(session_id, Arc::new(RwLock::new(new_session)));
 
                           Response::builder()
                             .header("Set-Cookie", session_id.to_string())
@@ -315,6 +346,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
       .or(verify)
       .or(login)
       .or(logout)
+      .or(protected)
     ;
 
     let non_tls_server = warp::serve(routes.clone().with(warp::trace::request()))
