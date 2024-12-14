@@ -4,6 +4,7 @@ mod store;
 
 use std::collections::HashMap;
 use std::ops::Add;
+use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::{Duration, SystemTime};
@@ -102,7 +103,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     get /health-check
     post /login username,password
-    post /logout
+    get /logout
     get /protected
     */
 
@@ -144,6 +145,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .body(format!("Hello, {}!", username))
                       }
                   }
+              }
+          })
+    };
+
+    // POST /logout
+    let logout = {
+        let session = session.clone();
+        warp::path::path("logout")
+          .and(warp::get())
+          .and(warp::header::<String>("Cookie"))
+          .then(move |cookie: String| {
+              let session = session.to_owned();
+              async move {
+                  if let Ok(cookie) = Uuid::from_str(&cookie) {
+                      if session.read().unwrap().contains_key(&cookie) {
+                          session.write().unwrap().remove(&cookie);
+                      }
+                  }
+                  "logout".to_string()
               }
           })
     };
@@ -294,6 +314,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
       .or(create)
       .or(verify)
       .or(login)
+      .or(logout)
     ;
 
     let non_tls_server = warp::serve(routes.clone().with(warp::trace::request()))
