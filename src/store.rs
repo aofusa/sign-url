@@ -2,7 +2,6 @@ use sqlx::{Pool, Sqlite};
 use sqlx::sqlite::SqlitePoolOptions;
 use crate::account::Account;
 
-#[allow(dead_code)]
 pub struct DataStore {
     pool: Pool<Sqlite>,
 }

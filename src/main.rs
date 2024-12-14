@@ -2,17 +2,21 @@ mod sign_url;
 mod account;
 mod store;
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::ops::Add;
+use std::sync::{Arc, RwLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use rsa::RsaPrivateKey;
 use serde_derive::{Deserialize, Serialize};
 use tokio::time::sleep;
 use tracing::{debug, info};
 use tracing_subscriber;
 use url::Url;
+use uuid::Uuid;
 use warp::Filter;
 use warp::host::Authority;
+use warp::http::Response;
 use crate::sign_url::SignUrlContainer;
 use crate::account::Account;
 use crate::store::DataStore;
@@ -51,6 +55,25 @@ struct VerifyQuery {
     signature: String,
 }
 
+struct ServerSession {
+    id: Uuid,
+    expires: u64,
+}
+
+impl ServerSession {
+    fn new(expires: u64) -> Self {
+        let expires = SystemTime::now()
+          .add(Duration::from_millis(expires))
+          .duration_since(SystemTime::UNIX_EPOCH)
+          .unwrap()
+          .as_secs();
+        ServerSession {
+            id: Uuid::new_v4(),
+            expires
+        }
+    }
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let filter = std::env::var("RUST_LOG").unwrap_or_else(|_| "tracing=info,warp=debug".to_owned());
@@ -69,6 +92,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("start setup datastore...");
     let datastore = Arc::new(DataStore::setup(1024).await?);
     info!("finish setup datastore...");
+
+    let session = Arc::new(RwLock::new(HashMap::<Uuid, ServerSession>::new()));
 
     /*
     post /create?expires=number username,password
@@ -157,12 +182,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let verify = {
         let private_key = private_key.clone();
         let datastore = datastore.clone();
+        let session = session.clone();
         warp::path!("verify")
           .and(warp::get())
           .and(warp::query::<VerifyQuery>())
           .then(move |query: VerifyQuery| {
               let private_key = private_key.to_owned();
               let datastore = datastore.to_owned();
+              let session = session.to_owned();
               async move {
                   let container = SignUrlContainer {
                       payload: query.payload,
@@ -182,14 +209,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                   },
                                   Err(err) => {
                                       info!("{:?}", err);
-                                      if err.to_string() == "Expired" { return "Expired".to_string(); }
+                                      if err.to_string() == "Expired" {
+                                          return Response::builder()
+                                            .body("Expired".to_string());
+                                      }
                                       (None, "Invalid".to_string())
                                   }
                               }
                           },
                           Err(err) => {
                               info!("{:?}", err);
-                              if err.to_string() == "Expired" { return "Expired".to_string(); }
+                              if err.to_string() == "Expired" {
+                                  return Response::builder()
+                                    .body("Expired".to_string());
+                              }
                               (None, "Invalid".to_string())
                           }
                       }
@@ -198,12 +231,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                   match user {
                       Some(user) => {
                           if let Ok(_account) = datastore.select_account(&user.username).await {
-                              return "user already exist".to_string();
+                              return Response::builder()
+                                .body("user already exist".to_string());
                           }
                           datastore.insert_account(&user.username, &user.password).await.unwrap();
-                          response
+                          let new_session = ServerSession::new(100000);
+                          let session_id = new_session.id;
+                          session.write().unwrap().insert(session_id, new_session);
+
+                          Response::builder()
+                            .header("Set-Cookie", session_id.to_string())
+                            .body(response)
                       },
-                      None => "Invalid".to_string()
+                      None => {
+                          Response::builder()
+                            .body("Invalid".to_string())
+                      }
                   }
               }
           })
