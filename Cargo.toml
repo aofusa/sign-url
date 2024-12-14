@@ -12,6 +12,7 @@ serde = { version = "1.0.216", features = ["derive"] }
 serde_derive = "1.0.216"
 serde_json = "1.0.133"
 sha2 = "0.10.8"
+sqlx = { version = "0.8.2", features = ["runtime-tokio", "sqlite"] }
 tokio = { version = "1.42.0", features = ["full"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }

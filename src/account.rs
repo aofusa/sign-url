@@ -2,8 +2,9 @@ use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::SaltString;
 use serde_derive::{Deserialize, Serialize};
+use sqlx::FromRow;
 
-#[derive(Deserialize, Serialize, Eq, PartialEq, Debug)]
+#[derive(Deserialize, Serialize, FromRow, Eq, PartialEq, Debug)]
 pub struct Account {
     pub username: String,
     pub password: String,

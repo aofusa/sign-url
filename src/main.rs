@@ -1,5 +1,6 @@
 mod sign_url;
 mod account;
+mod store;
 
 use std::sync::Arc;
 use std::thread;
@@ -14,6 +15,7 @@ use warp::Filter;
 use warp::host::Authority;
 use crate::sign_url::SignUrlContainer;
 use crate::account::Account;
+use crate::store::DataStore;
 
 #[derive(Deserialize, Serialize, Debug)]
 struct CreateQuery {
@@ -49,7 +51,7 @@ struct VerifyQuery {
     signature: String,
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let filter = std::env::var("RUST_LOG").unwrap_or_else(|_| "tracing=info,warp=debug".to_owned());
     tracing_subscriber::fmt()
@@ -61,8 +63,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // padding: 11byte 固定
     // username = 512-97-11 = 408文字 (255文字の制限を付けるならこれでOK 1023文字なら鍵長が8192bit必要)
     info!("start create encrypt key...");
-    let private_key = Arc::new(RsaPrivateKey::new(&mut rand::thread_rng(), 2048).unwrap());
+    let private_key = Arc::new(RsaPrivateKey::new(&mut rand::thread_rng(), 2048)?);
     info!("finish create encrypt key");
+
+    info!("start setup datastore...");
+    let datastore = Arc::new(DataStore::setup(1024).await?);
+    info!("finish setup datastore...");
 
     /*
     post /create?expires=number username,password
@@ -83,6 +89,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // POST /create?expires=number
     let create = {
         let private_key = private_key.clone();
+        let datastore = datastore.clone();
         warp::path("create")
           .and(warp::post())
           .and(warp::query::<CreateQuery>())
@@ -90,6 +97,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
           .and(warp::host::optional())
           .then(move |query: CreateQuery, body: Account, authority: Option<Authority>| {
               let private_key = private_key.to_owned();
+              let datastore = datastore.to_owned();
               async move {
                   let host = match authority {
                       Some(a) => {
@@ -107,6 +115,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                   };
                   let expires = query.expires.unwrap_or_else(|| 600000u64);
                   debug!("host: {:?}, expires: {:?}", host, expires);
+
+                  if let Ok(_account) = datastore.select_account(&body.username).await {
+                      return warp::reply::json(&"user already exist".to_string());
+                  }
 
                   let account = {
                       let handle = thread::spawn(move || body.hash());
@@ -144,36 +156,54 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // GET /verify?signature~~~
     let verify = {
         let private_key = private_key.clone();
+        let datastore = datastore.clone();
         warp::path!("verify")
           .and(warp::get())
           .and(warp::query::<VerifyQuery>())
-          .map(move |query: VerifyQuery| {
+          .then(move |query: VerifyQuery| {
               let private_key = private_key.to_owned();
-              let container = SignUrlContainer {
-                  payload: query.payload,
-                  expires: query.expires,
-                  signature: query.signature,
-              };
-              let v = container.verify(private_key.as_ref());
-              match v {
-                  Ok(raw) => {
-                      match serde_json::from_str(&raw) {
-                          Ok(value) => {
-                              let user = Account::decompress(value);
-                              debug!("account: {:?}", user);
-                              format!("Hello, {}!", user.username)
+              let datastore = datastore.to_owned();
+              async move {
+                  let container = SignUrlContainer {
+                      payload: query.payload,
+                      expires: query.expires,
+                      signature: query.signature,
+                  };
+                  let (user, response) = {
+                      let v = container.verify(private_key.as_ref());
+                      match v {
+                          Ok(raw) => {
+                              match serde_json::from_str(&raw) {
+                                  Ok(value) => {
+                                      let user = Account::decompress(value);
+                                      debug!("account: {:?}", user);
+                                      let username = user.username.clone();
+                                      (Some(user), format!("Hello, {}!", username))
+                                  },
+                                  Err(err) => {
+                                      info!("{:?}", err);
+                                      if err.to_string() == "Expired" { return "Expired".to_string(); }
+                                      (None, "Invalid".to_string())
+                                  }
+                              }
                           },
                           Err(err) => {
                               info!("{:?}", err);
                               if err.to_string() == "Expired" { return "Expired".to_string(); }
-                              "Invalid".to_string()
+                              (None, "Invalid".to_string())
                           }
                       }
-                  },
-                  Err(err) => {
-                      info!("{:?}", err);
-                      if err.to_string() == "Expired" { return "Expired".to_string(); }
-                      "Invalid".to_string()
+                  };
+
+                  match user {
+                      Some(user) => {
+                          if let Ok(_account) = datastore.select_account(&user.username).await {
+                              return "user already exist".to_string();
+                          }
+                          datastore.insert_account(&user.username, &user.password).await.unwrap();
+                          response
+                      },
+                      None => "Invalid".to_string()
                   }
               }
           })
