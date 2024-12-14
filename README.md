@@ -22,11 +22,24 @@ APIエントリポイント
 - GET /health-check
 - POST /create
 - GET /verify
+- POST /login
+- POST /logout
+- GET /protected
 
 テスト
 -----
+
 ```sh
-curl -X POST -H 'Content-type: application/json' -d '{"username":"user","password":"user"}' https://localhost:3031/create?expires=10000 -k
-curl https://localhost:3031/verify?payload=~~~ -k
+# 仮アカウントの発行
+curl -X POST -H 'Content-type: application/json' -d '{"username":"user","password":"user"}' localhost:3030/create?expires=60000
+# 以下のようなレスポンスが返ってくるのでアクセスするとアカウントが発行される
+# {"sign_url": "http://localhost:3030/verify?payload=~~~"}
+curl localhost:3030/verify?payload=~~~
+
+# ログイン
+curl -X POST -H 'Content-Type: application/json' -d '{"username":"user","password":"user"}' localhost:3030/login -v
+# ログイン時に取得したcookieを渡してアクセスする
+# ログイン状態であれば authorized と表示、そうでなければ unauthorized と表示
+curl -H 'Cookie: ~~~' localhost:8080/protected -v
 ```
 
