@@ -20,6 +20,7 @@ http://localhost:3030 と https://localhost:3031 で起動する
 
 APIエントリポイント
 - GET /health-check
+- GET /docs
 - POST /create
 - GET /verify
 - POST /login

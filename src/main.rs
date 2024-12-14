@@ -121,6 +121,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
       .and(warp::get())
       .map(|| "Hello, World!");
 
+    // GET /
+    let index = warp::path::end()
+      .and(warp::get())
+      .map(|| warp::reply::html(include_str!("../asset/index.html")));
+
     // POST /login
     let login = {
         let datastore = datastore.clone();
@@ -342,6 +347,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let routes = health_check
+      .or(index)
       .or(create)
       .or(verify)
       .or(login)
