@@ -111,6 +111,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
       .and(warp::get())
       .map(|| "Hello, World!");
 
+    // POST /login
+    let login = {
+        let datastore = datastore.clone();
+        let session = session.clone();
+        warp::path::path("login")
+          .and(warp::post())
+          .and(warp::body::content_length_limit(1024 * 16))
+          .and(warp::body::json())
+          .then(move |body: Account| {
+              let datastore = datastore.to_owned();
+              let session = session.to_owned();
+              async move {
+                  match datastore.select_account(&body.username).await {
+                      Err(_account) => {
+                          return Response::builder()
+                            .body("user not found".to_string());
+                      },
+                      Ok(account) => {
+                          if let Err(_) = account.verify(&body.password) {
+                              return  Response::builder()
+                                  .body("incorrect password".to_string());
+                          }
+                          let username = account.username.clone();
+
+                          let new_session = ServerSession::new(100000);
+                          let session_id = new_session.id;
+                          session.write().unwrap().insert(session_id, new_session);
+
+                          Response::builder()
+                            .header("Set-Cookie", session_id.to_string())
+                            .body(format!("Hello, {}!", username))
+                      }
+                  }
+              }
+          })
+    };
+
     // POST /create?expires=number
     let create = {
         let private_key = private_key.clone();
@@ -118,6 +155,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         warp::path("create")
           .and(warp::post())
           .and(warp::query::<CreateQuery>())
+          .and(warp::body::content_length_limit(1024 * 16))
           .and(warp::body::json())
           .and(warp::host::optional())
           .then(move |query: CreateQuery, body: Account, authority: Option<Authority>| {
@@ -255,6 +293,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let routes = health_check
       .or(create)
       .or(verify)
+      .or(login)
     ;
 
     let non_tls_server = warp::serve(routes.clone().with(warp::trace::request()))
