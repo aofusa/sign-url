@@ -4,9 +4,9 @@ Sign URL
 
 署名付きURLを生成するAPIサーバの実装
 
-アカウント作成すると一時アカウントを発行する  
-一時アカウントはRSAによって暗号化され、署名付きURLに埋め込まれる  
-署名付きURLにアクセスすることで一時アカウントの正当性検証を行うサンプル  
+アカウント作成すると一時アカウントを発行する
+一時アカウントはRSAによって暗号化され、署名付きURLに埋め込まれる
+署名付きURLにアクセスすることで一時アカウントの正当性検証を行うサンプル
 
 
 実行環境構築
@@ -44,5 +44,11 @@ curl -X POST -H 'Content-Type: application/json' -d '{"username":"user","passwor
 # ログイン時に取得したcookieを渡してアクセスする
 # ログイン状態であれば authorized と表示、そうでなければ unauthorized と表示
 curl -H 'Cookie: ~~~' localhost:8080/protected -v
+```
+
+docker build
+```sh
+tar -ch $(ls -A) | docker build -t dev.local/signurl:latest -
+docker run --rm -it --publish 3030:3030 --publish 3031:3031 dev.local/signurl:latest
 ```
 
