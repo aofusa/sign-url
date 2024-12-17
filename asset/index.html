@@ -5,8 +5,79 @@
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Sign URL</title>
+    <script src="https://unpkg.com/htmx.org@2.0.4" integrity="sha384-HGfztofotfshcF7+8n44JQL2oJmowVChPTg48S+jvZoztPfvwD79OC/LTtG6dMp+" crossorigin="anonymous"></script>
+    <script src="https://unpkg.com/htmx-ext-json-enc@2.0.1/json-enc.js" integrity="sha384-fU2gwx20YcGXySGydrPaoJC4ea0NrbR57aVtU79A0lmU41xUEo5d1Z99US+p4ox2" crossorigin="anonymous"></script>
+    <script src="https://unpkg.com/htmx-ext-client-side-templates@2.0.0/client-side-templates.js" integrity="sha384-q/huQyJ6q5A6n6a7woJDV43/kg0OMiEM9B94VPjZD0VVN5DD2et0L8nAoX05TYVZ" crossorigin="anonymous"></script>
+    <script src="https://unpkg.com/mustache@4.2.0" integrity="sha384-w1w4OJZe53/hPslZL3huM7kr/RQ+IXfaVeO5Tx0boUDt0ZTA8dwJ5OjxjpWOtw14" crossorigin="anonymous"></script>
 </head>
 <body>
-    <p>It works!</p>
+    <p>Try Sign URL</p>
+
+    <div hx-ext="client-side-templates">
+        <form hx-post="/create"
+              hx-trigger="click"
+              hx-target="#verify"
+              hx-swap="innerHTML"
+              hx-ext="json-enc"
+              mustache-template="verify-url-template"
+        >
+            <label for="create-username">Username: </label><input type="text" name="username" id="create-username" required>
+            <label for="create-password">Password: </label><input type="password" name="password" id="create-password" required>
+            <input type="submit" value="create">
+        </form>
+
+        <div id="verify"></div>
+
+        <template id="verify-url-template">
+            <label for="verify-url">Verify URL</label><textarea id="verify-url" placeholder="verify url">{{sign_url}}</textarea>
+            <button
+                    hx-get={{sign_url}}
+                    hx-trigger="click"
+                    hx-target="#verify-result"
+                    hx-swap="innerHTML"
+            >
+                verify
+            </button>
+            <p>verify result: <span id="verify-result"></span></p>
+        </template>
+    </div>
+
+    <form hx-post="/login"
+          hx-trigger="click"
+          hx-target="#login-result"
+          hx-swap="innerHTML"
+          hx-ext="json-enc"
+    >
+        <label for="login-username">Username: </label><input type="text" name="username" id="login-username" required>
+        <label for="login-password">Password: </label><input type="password" name="password" id="login-password" required>
+        <input type="submit" value="login">
+    </form>
+
+    <div>
+        <p>login result: <span id="login-result">logout</span></p>
+    </div>
+
+    <div>
+        <button
+            hx-get="/protected"
+            hx-trigger="click"
+            hx-target="#protected-result"
+            hx-swap="innerHTML"
+        >
+            protected
+        </button>
+        <p>result: <span id="protected-result">unauthorized</span></p>
+    </div>
+
+    <div>
+        <button
+                hx-get="/logout"
+                hx-trigger="click"
+                hx-target="#login-result"
+                hx-swap="innerHTML"
+        >
+            logout
+        </button>
+    </div>
 </body>
 </html>
