@@ -210,13 +210,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                       if let Ok(cookie) = Uuid::from_str(&cookie) {
                           if let Some(session) = session.read().unwrap().get(&cookie) {
                               if session.clone().read().unwrap().expires > SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs() {
+                                  let session_id = session.clone().read().unwrap().id;
                                   session.clone().write().unwrap().refresh(DEFAULT_COOKIE_EXPIRES);
-                                  return "authorized".to_string();
+
+                                  return Response::builder()
+                                    // .header("Set-Cookie", format!("token={}; Secure; HttpOnly; SameSite=Lax; Max-Age={}", session_id.to_string(), DEFAULT_COOKIE_EXPIRES))
+                                    .header("Set-Cookie", format!("token={}; HttpOnly; SameSite=Lax; Max-Age={}", session_id.to_string(), DEFAULT_COOKIE_EXPIRES))
+                                    .body("authorized".to_string());
                               }
                           }
                       }
                   }
-                  "unauthorized".to_string()
+                  Response::builder()
+                    .body("unauthorized".to_string())
               }
           })
     };
