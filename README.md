@@ -15,12 +15,14 @@ Sign URL
 RUST_LOG=debug cargo run
 ```
 
-http://localhost:3030 と https://localhost:3031 で起動する  
+http://localhost:3030 と https://localhost:3031 で起動
+
+上記にアクセスすることで検証用htmlが返ってくる
 
 
 APIエントリポイント
+- GET /
 - GET /health-check
-- GET /docs
 - POST /create
 - GET /verify
 - POST /login
