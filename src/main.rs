@@ -64,7 +64,7 @@ struct ServerSession {
 impl ServerSession {
     fn new(expires: u64) -> Self {
         let expires = SystemTime::now()
-          .add(Duration::from_millis(expires))
+          .add(Duration::from_secs(expires))
           .duration_since(SystemTime::UNIX_EPOCH)
           .unwrap()
           .as_secs();
@@ -76,7 +76,7 @@ impl ServerSession {
 
     fn refresh(&mut self, expires: u64) {
         let expires = SystemTime::now()
-          .add(Duration::from_millis(expires))
+          .add(Duration::from_secs(expires))
           .duration_since(SystemTime::UNIX_EPOCH)
           .unwrap()
           .as_secs();
@@ -91,16 +91,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
       .with_env_filter(filter)
       .init();
 
+    const DEFAULT_RSA_BIT_SIZE: usize = 2048;
+    const DEFAULT_DATABASE_CONNECTION: u32 = 1024;
+    const DEFAULT_CONTENT_LENGTH_LIMIT: u64 = 1024 * 16;
+    const DEFAULT_COOKIE_EXPIRES: u64 = 2592000;  // 2592000秒 = 30日
+    const DEFAULT_VERIFY_EXPIRES: u64 = 600000;  // 600000ミリ秒 = 10分
+
     // 2048bit = 512byte まで暗号化可能
     // password: 97byte 固定
     // padding: 11byte 固定
     // username = 512-97-11 = 408文字 (255文字の制限を付けるならこれでOK 1023文字なら鍵長が8192bit必要)
     info!("start create encrypt key...");
-    let private_key = Arc::new(RsaPrivateKey::new(&mut rand::thread_rng(), 2048)?);
+    let private_key = Arc::new(RsaPrivateKey::new(&mut rand::thread_rng(), DEFAULT_RSA_BIT_SIZE)?);
     info!("finish create encrypt key");
 
     info!("start setup datastore...");
-    let datastore = Arc::new(DataStore::setup(1024).await?);
+    let datastore = Arc::new(DataStore::setup(DEFAULT_DATABASE_CONNECTION).await?);
     info!("finish setup datastore...");
 
     let session = Arc::new(RwLock::new(HashMap::<Uuid, Arc<RwLock<ServerSession>>>::new()));
@@ -122,9 +128,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
       .map(|| "Hello, World!");
 
     // GET /
-    let index = warp::path::end()
-      .and(warp::get())
-      .map(|| warp::reply::html(include_str!("../asset/index.html")));
+    let index = {
+        let path = warp::path::end()
+          .and(warp::get());
+        #[cfg(debug_assertions)]
+        let api = path.and(warp::fs::file("./asset/index.html"));
+        #[cfg(not(debug_assertions))]
+        let api = path.map(|| warp::reply::html(include_str!("../asset/index.html")));
+        api
+    };
 
     // POST /login
     let login = {
@@ -132,7 +144,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let session = session.clone();
         warp::path::path("login")
           .and(warp::post())
-          .and(warp::body::content_length_limit(1024 * 16))
+          .and(warp::body::content_length_limit(DEFAULT_CONTENT_LENGTH_LIMIT))
           .and(warp::body::json())
           .then(move |body: Account| {
               let datastore = datastore.to_owned();
@@ -150,12 +162,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                           }
                           let username = account.username.clone();
 
-                          let new_session = ServerSession::new(100000);
+                          let new_session = ServerSession::new(DEFAULT_COOKIE_EXPIRES);
                           let session_id = new_session.id;
                           session.write().unwrap().insert(session_id, Arc::new(RwLock::new(new_session)));
 
                           Response::builder()
-                            .header("Set-Cookie", session_id.to_string())
+                            // .header("Set-Cookie", format!("token={}; Secure; HttpOnly; SameSite=Lax; Max-Age={}", session_id.to_string(), DEFAULT_COOKIE_EXPIRES))
+                            .header("Set-Cookie", format!("token={}; HttpOnly; SameSite=Lax; Max-Age={}", session_id.to_string(), DEFAULT_COOKIE_EXPIRES))
                             .body(format!("Hello, {}!", username))
                       }
                   }
@@ -168,13 +181,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let session = session.clone();
         warp::path::path("logout")
           .and(warp::get())
-          .and(warp::header::<String>("Cookie"))
-          .then(move |cookie: String| {
+          .and(warp::filters::cookie::optional("token"))
+          .then(move |cookie: Option<String>| {
               let session = session.to_owned();
               async move {
-                  if let Ok(cookie) = Uuid::from_str(&cookie) {
-                      if session.read().unwrap().contains_key(&cookie) {
-                          session.write().unwrap().remove(&cookie);
+                  if let Some(cookie) = cookie {
+                      if let Ok(cookie) = Uuid::from_str(&cookie) {
+                          if session.read().unwrap().contains_key(&cookie) {
+                              session.write().unwrap().remove(&cookie);
+                          }
                       }
                   }
                   "logout".to_string()
@@ -187,15 +202,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let session = session.clone();
         warp::path::path("protected")
           .and(warp::get())
-          .and(warp::header::<String>("Cookie"))
-          .then(move |cookie: String| {
+          .and(warp::filters::cookie::optional("token"))
+          .then(move |cookie: Option<String>| {
               let session = session.to_owned();
               async move {
-                  if let Ok(cookie) = Uuid::from_str(&cookie) {
-                      if let Some(session) = session.read().unwrap().get(&cookie) {
-                          if session.clone().read().unwrap().expires > SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs() {
-                              session.clone().write().unwrap().refresh(100000);
-                              return "authorized".to_string();
+                  if let Some(cookie) = cookie {
+                      if let Ok(cookie) = Uuid::from_str(&cookie) {
+                          if let Some(session) = session.read().unwrap().get(&cookie) {
+                              if session.clone().read().unwrap().expires > SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs() {
+                                  session.clone().write().unwrap().refresh(DEFAULT_COOKIE_EXPIRES);
+                                  return "authorized".to_string();
+                              }
                           }
                       }
                   }
@@ -211,7 +228,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         warp::path("create")
           .and(warp::post())
           .and(warp::query::<CreateQuery>())
-          .and(warp::body::content_length_limit(1024 * 16))
+          .and(warp::body::content_length_limit(DEFAULT_CONTENT_LENGTH_LIMIT))
           .and(warp::body::json())
           .and(warp::host::optional())
           .then(move |query: CreateQuery, body: Account, authority: Option<Authority>| {
@@ -232,7 +249,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                       },
                       None => "http://localhost:3030/".to_string(),
                   };
-                  let expires = query.expires.unwrap_or_else(|| 600000u64);
+                  let expires = query.expires.unwrap_or_else(|| DEFAULT_VERIFY_EXPIRES);
                   debug!("host: {:?}, expires: {:?}", host, expires);
 
                   if let Ok(_account) = datastore.select_account(&body.username).await {
@@ -242,6 +259,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                   let account = {
                       let handle = thread::spawn(move || body.hash());
                       while !handle.is_finished() {
+                          // Interval magic number from tokio
+                          // see also: https://docs.rs/tokio/latest/tokio/runtime/struct.Builder.html#method.global_queue_interval
                           sleep(Duration::from_millis(31)).await;
                       }
                       match handle.join() {
@@ -329,12 +348,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 .body("user already exist".to_string());
                           }
                           datastore.insert_account(&user.username, &user.password).await.unwrap();
-                          let new_session = ServerSession::new(100000);
+                          let new_session = ServerSession::new(DEFAULT_COOKIE_EXPIRES);
                           let session_id = new_session.id;
                           session.write().unwrap().insert(session_id, Arc::new(RwLock::new(new_session)));
 
                           Response::builder()
-                            .header("Set-Cookie", session_id.to_string())
+                            // .header("Set-Cookie", format!("token={}; Secure; HttpOnly; SameSite=Lax; Max-Age={}", session_id.to_string(), DEFAULT_COOKIE_EXPIRES))
+                            .header("Set-Cookie", format!("token={}; HttpOnly; SameSite=Lax; Max-Age={}", session_id.to_string(), DEFAULT_COOKIE_EXPIRES))
                             .body(response)
                       },
                       None => {
