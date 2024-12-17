@@ -84,6 +84,28 @@ impl ServerSession {
     }
 }
 
+mod filter {
+    use warp::Filter;
+    use warp::host::Authority;
+
+    pub fn scheme() -> impl Filter<Extract = (String,), Error = warp::Rejection> + Clone {
+        warp::any()
+          .and(warp::host::optional())
+          .map(move |authority: Option<Authority>| {
+              if let Some(authority) = authority {
+                  if let Some(port) = authority.port() {
+                      if port.as_u16() == 3030 {
+                          return "http".to_string();
+                      } else {
+                          return "https".to_string();
+                      }
+                  }
+              }
+              return "http".to_string();
+          })
+    }
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let filter = std::env::var("RUST_LOG").unwrap_or_else(|_| "tracing=info,warp=debug".to_owned());
@@ -146,7 +168,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
           .and(warp::post())
           .and(warp::body::content_length_limit(DEFAULT_CONTENT_LENGTH_LIMIT))
           .and(warp::body::json())
-          .then(move |body: Account| {
+          .and(filter::scheme())
+          .then(move |body: Account, scheme: String| {
               let datastore = datastore.to_owned();
               let session = session.to_owned();
               async move {
@@ -166,9 +189,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                           let session_id = new_session.id;
                           session.write().unwrap().insert(session_id, Arc::new(RwLock::new(new_session)));
 
+                          let mut header = format!("token={}; HttpOnly; SameSite=Lax; Max-Age={}", session_id.to_string(), DEFAULT_COOKIE_EXPIRES);
+                          if scheme == "https".to_string() {
+                              header = format!("{}; Secure", header);
+                          }
+
                           Response::builder()
-                            // .header("Set-Cookie", format!("token={}; Secure; HttpOnly; SameSite=Lax; Max-Age={}", session_id.to_string(), DEFAULT_COOKIE_EXPIRES))
-                            .header("Set-Cookie", format!("token={}; HttpOnly; SameSite=Lax; Max-Age={}", session_id.to_string(), DEFAULT_COOKIE_EXPIRES))
+                            .header("Set-Cookie", header)
                             .body(format!("Hello, {}!", username))
                       }
                   }
@@ -203,7 +230,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         warp::path::path("protected")
           .and(warp::get())
           .and(warp::filters::cookie::optional("token"))
-          .then(move |cookie: Option<String>| {
+          .and(filter::scheme())
+          .then(move |cookie: Option<String>, scheme: String| {
               let session = session.to_owned();
               async move {
                   if let Some(cookie) = cookie {
@@ -213,9 +241,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                   let session_id = session.clone().read().unwrap().id;
                                   session.clone().write().unwrap().refresh(DEFAULT_COOKIE_EXPIRES);
 
+                                  let mut header = format!("token={}; HttpOnly; SameSite=Lax; Max-Age={}", session_id.to_string(), DEFAULT_COOKIE_EXPIRES);
+                                  if scheme == "https".to_string() {
+                                      header = format!("{}; Secure", header);
+                                  }
+
                                   return Response::builder()
-                                    // .header("Set-Cookie", format!("token={}; Secure; HttpOnly; SameSite=Lax; Max-Age={}", session_id.to_string(), DEFAULT_COOKIE_EXPIRES))
-                                    .header("Set-Cookie", format!("token={}; HttpOnly; SameSite=Lax; Max-Age={}", session_id.to_string(), DEFAULT_COOKIE_EXPIRES))
+                                    .header("Set-Cookie", header)
                                     .body("authorized".to_string());
                               }
                           }
@@ -305,7 +337,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         warp::path!("verify")
           .and(warp::get())
           .and(warp::query::<VerifyQuery>())
-          .then(move |query: VerifyQuery| {
+          .and(filter::scheme())
+          .then(move |query: VerifyQuery, scheme: String| {
               let private_key = private_key.to_owned();
               let datastore = datastore.to_owned();
               let session = session.to_owned();
@@ -358,9 +391,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                           let session_id = new_session.id;
                           session.write().unwrap().insert(session_id, Arc::new(RwLock::new(new_session)));
 
+                          let mut header = format!("token={}; HttpOnly; SameSite=Lax; Max-Age={}", session_id.to_string(), DEFAULT_COOKIE_EXPIRES);
+                          if scheme == "https".to_string() {
+                              header = format!("{}; Secure", header);
+                          }
+
                           Response::builder()
-                            // .header("Set-Cookie", format!("token={}; Secure; HttpOnly; SameSite=Lax; Max-Age={}", session_id.to_string(), DEFAULT_COOKIE_EXPIRES))
-                            .header("Set-Cookie", format!("token={}; HttpOnly; SameSite=Lax; Max-Age={}", session_id.to_string(), DEFAULT_COOKIE_EXPIRES))
+                            .header("Set-Cookie", header)
                             .body(response)
                       },
                       None => {
