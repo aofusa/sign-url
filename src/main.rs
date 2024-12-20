@@ -85,6 +85,8 @@ impl ServerSession {
 }
 
 mod filter {
+    use serde::de::DeserializeOwned;
+    use serde::Serialize;
     use warp::Filter;
     use warp::host::Authority;
 
@@ -102,6 +104,17 @@ mod filter {
                   }
               }
               return "http".to_string();
+          })
+    }
+
+    pub fn sanitizer<T: DeserializeOwned + Serialize + Send>(limit: u64) -> impl Filter<Extract = (T,), Error = warp::Rejection> + Clone {
+        warp::any()
+          .and(warp::body::content_length_limit(limit))
+          .and(warp::body::json())
+          .map(move |body: T| {
+              let s = serde_json::to_string(&body).unwrap();
+              let c = ammonia::clean(&s);
+              serde_json::from_str(&c).unwrap()
           })
     }
 }
@@ -166,8 +179,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let session = session.clone();
         warp::path::path("login")
           .and(warp::post())
-          .and(warp::body::content_length_limit(DEFAULT_CONTENT_LENGTH_LIMIT))
-          .and(warp::body::json())
+          .and(filter::sanitizer(DEFAULT_CONTENT_LENGTH_LIMIT))
           .and(filter::scheme())
           .then(move |body: Account, scheme: String| {
               let datastore = datastore.to_owned();
@@ -266,8 +278,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         warp::path("create")
           .and(warp::post())
           .and(warp::query::<CreateQuery>())
-          .and(warp::body::content_length_limit(DEFAULT_CONTENT_LENGTH_LIMIT))
-          .and(warp::body::json())
+          .and(filter::sanitizer(DEFAULT_CONTENT_LENGTH_LIMIT))
           .and(warp::host::optional())
           .then(move |query: CreateQuery, body: Account, authority: Option<Authority>| {
               let private_key = private_key.to_owned();
