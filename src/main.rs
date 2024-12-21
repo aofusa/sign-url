@@ -9,12 +9,8 @@ use std::time::{Duration, SystemTime};
 use rsa::RsaPrivateKey;
 use tracing::info;
 use tracing_subscriber;
-use utoipa::OpenApi;
-use utoipa_swagger_ui::Config;
 use uuid::Uuid;
-use warp::{Filter, Rejection, Reply};
-use warp::http::{Response, StatusCode, Uri};
-use warp::path::{FullPath, Tail};
+use warp::Filter;
 use crate::store::DataStore;
 
 struct ServerSession {
@@ -42,44 +38,6 @@ impl ServerSession {
           .unwrap()
           .as_secs();
         self.expires = expires;
-    }
-}
-
-#[derive(OpenApi)]
-#[openapi(
-    info(description = "My Api description"),
-)]
-struct ApiDoc;
-
-async fn serve_swagger(
-    full_path: FullPath,
-    tail: Tail,
-    config: Arc<Config<'static>>,
-) -> Result<Box<dyn Reply + 'static>, Rejection> {
-    if full_path.as_str() == "/swagger-ui" {
-        return Ok(Box::new(warp::redirect::found(Uri::from_static(
-            "/swagger-ui/",
-        ))));
-    }
-
-    let path = tail.as_str();
-    match utoipa_swagger_ui::serve(path, config) {
-        Ok(file) => {
-            if let Some(file) = file {
-                Ok(Box::new(
-                    Response::builder()
-                      .header("Content-Type", file.content_type)
-                      .body(file.bytes),
-                ))
-            } else {
-                Ok(Box::new(StatusCode::NOT_FOUND))
-            }
-        }
-        Err(error) => Ok(Box::new(
-            Response::builder()
-              .status(StatusCode::INTERNAL_SERVER_ERROR)
-              .body(error.to_string()),
-        )),
     }
 }
 
@@ -131,14 +89,15 @@ mod route {
     use tokio::time::sleep;
     use tracing::{debug, info};
     use url::Url;
-    use utoipa::OpenApi;
+    use utoipa::{IntoParams, OpenApi, ToSchema};
     use utoipa_swagger_ui::Config;
     use uuid::Uuid;
     use warp::{Filter, Rejection, Reply};
     use warp::host::Authority;
-    use warp::http::Response;
+    use warp::http::{Response, StatusCode, Uri};
+    use warp::path::{FullPath, Tail};
     use warp::reply::Json;
-    use crate::{filter, serve_swagger, ApiDoc, ServerSession};
+    use crate::{filter, ServerSession};
     use crate::account::Account;
     use crate::sign_url::SignUrlContainer;
     use crate::store::DataStore;
@@ -147,12 +106,51 @@ mod route {
     const DEFAULT_COOKIE_EXPIRES: u64 = 2592000;  // 2592000秒 = 30日
     const DEFAULT_VERIFY_EXPIRES: u64 = 600000;  // 600000ミリ秒 = 10分
 
-    #[derive(Deserialize, Serialize, Debug)]
+    #[derive(OpenApi)]
+    #[openapi(
+        info(description = "Sign URL api description"),
+        paths(index, health_check, login, logout, protected, create, verify)
+    )]
+    struct ApiDoc;
+
+    async fn serve_swagger(
+        full_path: FullPath,
+        tail: Tail,
+        config: Arc<Config<'static>>,
+    ) -> Result<Box<dyn Reply + 'static>, Rejection> {
+        if full_path.as_str() == "/swagger-ui" {
+            return Ok(Box::new(warp::redirect::found(Uri::from_static(
+                "/swagger-ui/",
+            ))));
+        }
+
+        let path = tail.as_str();
+        match utoipa_swagger_ui::serve(path, config) {
+            Ok(file) => {
+                if let Some(file) = file {
+                    Ok(Box::new(
+                        Response::builder()
+                          .header("Content-Type", file.content_type)
+                          .body(file.bytes),
+                    ))
+                } else {
+                    Ok(Box::new(StatusCode::NOT_FOUND))
+                }
+            }
+            Err(error) => Ok(Box::new(
+                Response::builder()
+                  .status(StatusCode::INTERNAL_SERVER_ERROR)
+                  .body(error.to_string()),
+            )),
+        }
+    }
+
+    #[derive(Deserialize, Serialize, IntoParams, Debug)]
     struct CreateQuery {
         expires: Option<u64>,
     }
 
-    #[derive(Deserialize, Serialize, Debug)]
+    #[derive(Deserialize, Serialize, ToSchema, Debug)]
     struct CreateResponse {
         sign_url: String,  // ?payload=...&expires=...&signature=...
     }
@@ -174,13 +172,20 @@ mod route {
         }
     }
 
-    #[derive(Serialize, Deserialize, Debug)]
+    #[derive(Serialize, Deserialize, IntoParams, Debug)]
     struct VerifyQuery {
         payload: String,
         expires: u64,
         signature: String,
     }
 
+    #[utoipa::path(
+        get,
+        path = "/",
+        responses(
+            (status = 200, content_type = "text/html; charset=utf-8", body = String)
+        )
+    )]
     pub fn index() -> impl Filter<Extract = (warp::fs::File,), Error = Rejection> + Clone {
         // GET /
         let path = warp::path::end()
@@ -192,6 +197,13 @@ mod route {
         api
     }
 
+    #[utoipa::path(
+        get,
+        path = "/health-check",
+        responses(
+            (status = 200, body = String)
+        )
+    )]
     pub fn health_check() -> impl Filter<Extract = (String,), Error = Rejection> + Clone {
         // GET /health-check
         warp::path::path("health-check")
@@ -199,6 +211,14 @@ mod route {
           .map(|| "Hello, World!".to_string())
     }
 
+    #[utoipa::path(
+        post,
+        path = "/login",
+        request_body = Account,
+        responses(
+            (status = 200, body = String)
+        )
+    )]
     pub fn login(datastore: Arc<DataStore>, session: Arc<RwLock<HashMap<Uuid, Arc<RwLock<ServerSession>>>>>) -> impl Filter<Extract = (Result<Response<String>, warp::http::Error>,), Error = Rejection> + Clone {
         // POST /login
         let datastore = datastore.clone();
@@ -241,6 +261,13 @@ mod route {
           })
     }
 
+    #[utoipa::path(
+        get,
+        path = "/logout",
+        responses(
+            (status = 200, body = String)
+        )
+    )]
     pub fn logout(session: Arc<RwLock<HashMap<Uuid, Arc<RwLock<ServerSession>>>>>) -> impl Filter<Extract = (String,), Error = Rejection> + Clone {
         // GET /logout
         let session = session.clone();
@@ -262,6 +289,13 @@ mod route {
           })
     }
 
+    #[utoipa::path(
+        get,
+        path = "/protected",
+        responses(
+            (status = 200, body = String)
+        )
+    )]
     pub fn protected(session: Arc<RwLock<HashMap<Uuid, Arc<RwLock<ServerSession>>>>>) -> impl Filter<Extract = (Result<Response<String>, warp::http::Error>,), Error = Rejection> + Clone {
         // GET /protected
         let session = session.clone();
@@ -297,6 +331,15 @@ mod route {
           })
     }
 
+    #[utoipa::path(
+        post,
+        path = "/create",
+        params(CreateQuery),
+        request_body = Account,
+        responses(
+            (status = 200, body = CreateResponse)
+        )
+    )]
     pub fn create(datastore: Arc<DataStore>, private_key: Arc<RsaPrivateKey>) -> impl Filter<Extract = (Json,), Error = Rejection> + Clone {
         // POST /create?expires=number
         let private_key = private_key.clone();
@@ -366,6 +409,14 @@ mod route {
           })
     }
 
+    #[utoipa::path(
+        get,
+        path = "/verify",
+        params(VerifyQuery),
+        responses(
+            (status = 200, body = String)
+        )
+    )]
     pub fn verify(datastore: Arc<DataStore>, session: Arc<RwLock<HashMap<Uuid, Arc<RwLock<ServerSession>>>>>, private_key: Arc<RsaPrivateKey>) -> impl Filter<Extract = (Result<Response<String>, warp::http::Error>,), Error = Rejection> + Clone {
         // GET /verify?signature~~~
         let private_key = private_key.clone();

@@ -3,8 +3,9 @@ use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::SaltString;
 use serde_derive::{Deserialize, Serialize};
 use sqlx::FromRow;
+use utoipa::ToSchema;
 
-#[derive(Deserialize, Serialize, FromRow, Eq, PartialEq, Debug)]
+#[derive(Deserialize, Serialize, ToSchema, FromRow, Eq, PartialEq, Debug)]
 pub struct Account {
     pub username: String,
     pub password: String,
