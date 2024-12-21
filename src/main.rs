@@ -146,6 +146,7 @@ mod route {
     }
 
     #[derive(Deserialize, Serialize, IntoParams, Debug)]
+    #[into_params(parameter_in = Query)]
     struct CreateQuery {
         expires: Option<u64>,
     }
@@ -173,6 +174,7 @@ mod route {
     }
 
     #[derive(Serialize, Deserialize, IntoParams, Debug)]
+    #[into_params(parameter_in = Query)]
     struct VerifyQuery {
         payload: String,
         expires: u64,
