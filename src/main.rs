@@ -14,10 +14,13 @@ use tokio::time::sleep;
 use tracing::{debug, info};
 use tracing_subscriber;
 use url::Url;
+use utoipa::{OpenApi, ToSchema};
+use utoipa_swagger_ui::Config;
 use uuid::Uuid;
-use warp::Filter;
+use warp::{Filter, Rejection, Reply};
 use warp::host::Authority;
-use warp::http::Response;
+use warp::http::{Response, StatusCode, Uri};
+use warp::path::{FullPath, Tail};
 use crate::sign_url::SignUrlContainer;
 use crate::account::Account;
 use crate::store::DataStore;
@@ -84,9 +87,48 @@ impl ServerSession {
     }
 }
 
+#[derive(OpenApi)]
+#[openapi(
+    info(description = "My Api description"),
+)]
+struct ApiDoc;
+
+async fn serve_swagger(
+    full_path: FullPath,
+    tail: Tail,
+    config: Arc<Config<'static>>,
+) -> Result<Box<dyn Reply + 'static>, Rejection> {
+    if full_path.as_str() == "/swagger-ui" {
+        return Ok(Box::new(warp::redirect::found(Uri::from_static(
+            "/swagger-ui/",
+        ))));
+    }
+
+    let path = tail.as_str();
+    match utoipa_swagger_ui::serve(path, config) {
+        Ok(file) => {
+            if let Some(file) = file {
+                Ok(Box::new(
+                    Response::builder()
+                      .header("Content-Type", file.content_type)
+                      .body(file.bytes),
+                ))
+            } else {
+                Ok(Box::new(StatusCode::NOT_FOUND))
+            }
+        }
+        Err(error) => Ok(Box::new(
+            Response::builder()
+              .status(StatusCode::INTERNAL_SERVER_ERROR)
+              .body(error.to_string()),
+        )),
+    }
+}
+
 mod filter {
     use serde::de::DeserializeOwned;
     use serde::Serialize;
+    use tracing::debug;
     use warp::Filter;
     use warp::host::Authority;
 
@@ -114,6 +156,7 @@ mod filter {
           .map(move |body: T| {
               let s = serde_json::to_string(&body).unwrap();
               let c = ammonia::clean(&s);
+              debug!("raw: {}, sanitized: {}", s, c);
               serde_json::from_str(&c).unwrap()
           })
     }
@@ -157,6 +200,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     get /protected
     */
 
+    // GET /openapi.json
+    let openapi_json = warp::path::path("openapi.json")
+      .and(warp::get())
+      .map(|| warp::reply::json(&ApiDoc::openapi()));
+
+    // GET /docs
+    let config = Arc::new(Config::from("/openapi.json"));
+    let swagger_ui = warp::path::path("swagger-ui")
+      .and(warp::get())
+      .and(warp::path::full())
+      .and(warp::path::tail())
+      .and(warp::any().map(move || config.clone()))
+      .and_then(serve_swagger);
+
     // GET /health-check
     let health_check = warp::path::path("health-check")
       .and(warp::get())
@@ -192,8 +249,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                       },
                       Ok(account) => {
                           if let Err(_) = account.verify(&body.password) {
-                              return  Response::builder()
-                                  .body("incorrect password".to_string());
+                              return Response::builder()
+                                .body("incorrect password".to_string());
                           }
                           let username = account.username.clone();
 
@@ -427,6 +484,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
       .or(login)
       .or(logout)
       .or(protected)
+      .or(openapi_json)
+      .or(swagger_ui)
     ;
 
     let non_tls_server = warp::serve(routes.clone().with(warp::trace::request()))
